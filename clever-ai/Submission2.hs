@@ -403,15 +403,47 @@ nextHighestRankingPlanet gs pRanks = findNextRankingPlanet (M.toList pRanks) ini
       where
         notOurPlanet = not (ourPlanet (lookupPlanet pId gs))
 
+timidAttackFromAll :: PlanetId -> GameState -> [Order]
+timidAttackFromAll targetId gs@(GameState planets wormholes fleets) = concatMap sendToPath mEasiestPaths
+  where
+    planetIds = map fst (M.toList (ourPlanets gs))
+    mEasiestPaths = map (findEP targetId newGS) planetIds
+    newGS = GameState planets (changeWeight wormholes) fleets
+
+    changeWeight :: Wormholes -> Wormholes
+    changeWeight wormholesMap = M.map changeWeight' wormholesMap
+      where
+        changeWeight' :: Wormhole -> Wormhole
+        changeWeight' wormhole@(Wormhole src dst@(Target planetId) weight) =
+          let (Ships shipNum) = shipsOnPlanet gs planetId
+              newWeight = Turns shipNum
+           in Wormhole src dst newWeight
+
+    findEP :: PlanetId -> GameState -> PlanetId -> Maybe (Path (WormholeId, Wormhole))
+    findEP tId gs' srcId = shortestPath srcId tId gs'
+
+    shipsOnPlanet :: GameState -> PlanetId -> Ships
+    shipsOnPlanet st pId = ships
+      where
+        Planet _ ships _ = lookupPlanet pId st
+
+    sendToPath :: Maybe (Path (WormholeId, Wormhole)) -> [Order]
+    sendToPath mPath
+      | isNothing mPath = []
+      | otherwise = send wId Nothing gs
+      where
+        (Path _ e) = fromMaybe undefined mPath
+        wId = fst (last e)
+
 timidRush :: GameState -> AIState -> ([Order], Log, AIState)
-timidRush gs ai = (attackFromAll (fromJust (rushTarget ai')) gs, timidRushMsg, ai')
+timidRush gs ai
+  | isNothing (rank ai) = timidRush gs (ai {rank = Just (planetRank gs)})
+  | isNothing targetPlanetId || ourPlanet (lookupPlanet (fromJust targetPlanetId) gs) =
+      timidRush gs (ai {rushTarget = nextHighestRankingPlanet gs (fromJust (rank ai))})
+  | otherwise = (timidAttackFromAll (fromJust targetPlanetId) gs, timidRushMsg, ai)
   where
     targetPlanetId = rushTarget ai
-    ai' =
-      if (isNothing targetPlanetId || ourPlanet (lookupPlanet (fromJust targetPlanetId) gs))
-        then ai {rushTarget = findEnemyPlanet gs}
-        else ai
-    timidRushMsg = ["Timid Rush Initiated: "] ++ [show (rushTarget ai')]
+    timidRushMsg = ["Timid Rush Initiated: "] ++ [show targetPlanetId]
 
 skynet :: GameState -> AIState -> ([Order], Log, AIState)
 skynet _ _ = undefined
