@@ -8,7 +8,7 @@ module Submission2 where
 
 import Control.DeepSeq
 import Data.List (unfoldr)
-import Data.List hiding (PQueue, insert)
+import Data.List
 import Data.Map (Map)
 import Data.Map qualified as M
 import Data.Maybe
@@ -36,7 +36,6 @@ import Lib
     Wormhole (..),
     WormholeId (..),
     Wormholes,
-    cmpPath,
     eq,
     gt,
     lt,
@@ -403,37 +402,86 @@ nextHighestRankingPlanet gs pRanks = findNextRankingPlanet (M.toList pRanks) ini
       where
         notOurPlanet = not (ourPlanet (lookupPlanet pId gs))
 
+data PList a = PList (a -> a -> Ordering) [a]
+
+instance PQueue PList where
+  toPQueue cmp xs = PList cmp (sortBy cmp xs)
+
+  fromPQueue (PList _ xs) = xs
+
+  empty cmp = PList cmp []
+
+  isEmpty (PList _ xs) = null xs
+
+  priority (PList cmp _) = cmp
+
+  insert x (PList cmp []) = PList cmp [x]
+  insert x ps@(PList cmp xs)
+    | x <= y = cons x ps
+    | otherwise = cons y (Lib.insert x ys)
+    where
+      (<=) = lte cmp
+      (y, ys) = detach ps
+      cons x (PList cmp xs) = PList cmp (x : xs)
+
+  extract (PList cmp (x : xs)) = x
+
+  discard (PList cmp (x : xs)) = PList cmp xs
+
+pathFromEdge :: Edge e v => e -> Path e
+pathFromEdge e = Path (weight e) [e]
+
+extend :: Edge e v => Path e -> e -> Path e
+extend (Path _ []) _ = error "extend: Empty path"
+extend (Path d (e:es)) e'
+  | target e == source e' = Path (d + weight e') (e':e:es)
+  | otherwise = error "extend: Incompatible endpoints"
+
 timidAttackFromAll :: PlanetId -> GameState -> [Order]
-timidAttackFromAll targetId gs@(GameState planets wormholes fleets) = concatMap sendToPath mEasiestPaths
-  where
-    planetIds = map fst (M.toList (ourPlanets gs))
-    mEasiestPaths = map (findEP targetId newGS) planetIds
-    newGS = GameState planets (changeWeight wormholes) fleets
+timidAttackFromAll targetId gs@(GameState planets wormholes fleets) =
+  let sendToPath tId gState pId =
+        case easiestPath pId tId gState of
+          Just (Path _ paths) -> send (fst (last paths)) Nothing gState
+          Nothing             -> []
+  
+          where
+            easiestPath :: PlanetId -> PlanetId -> GameState -> Maybe (Path (WormholeId, Wormhole))
+            easiestPath src dst st =
+              case filter ((== dst) . target) (easiestPaths st src) of
+                []      -> Nothing
+                (x : _) -> Just x
+  
+            easiestPaths :: GameState -> PlanetId -> [Path (WormholeId, Wormhole)]
+            easiestPaths gs'@(GameState ps' _ _) v =
+              dijkstra gs' (vertices gs' \\ [v]) ps
+              where
+                ps :: PList (Path (WormholeId, Wormhole))
+                ps = toPQueue compareEasiestpath (map pathFromEdge (edgesFrom gs' v))
 
-    changeWeight :: Wormholes -> Wormholes
-    changeWeight wormholesMap = M.map changeWeight' wormholesMap
-      where
-        changeWeight' :: Wormhole -> Wormhole
-        changeWeight' wormhole@(Wormhole src dst@(Target planetId) weight) =
-          let (Ships shipNum) = shipsOnPlanet gs planetId
-              newWeight = Turns shipNum
-           in Wormhole src dst newWeight
+                dijkstra :: (PQueue pqueue) => GameState -> [PlanetId] -> pqueue (Path (WormholeId, Wormhole)) -> [Path (WormholeId, Wormhole)]
+                dijkstra gs' [] ps = []
+                dijkstra gs' us ps
+                  | isEmpty ps = []
+                  | t `elem` us =
+                      p : dijkstra gs' (us \\ [t]) (foldr (Lib.insert . extend p) ps' (edgesFrom gs' t))
+                  | otherwise = dijkstra gs' us ps'
+                  where
+                    (p, ps') = detach ps
+                    t = target p
 
-    findEP :: PlanetId -> GameState -> PlanetId -> Maybe (Path (WormholeId, Wormhole))
-    findEP tId gs' srcId = shortestPath srcId tId gs'
+                compareEasiestpath :: Path (WormholeId, Wormhole) -> Path (WormholeId, Wormhole) -> Ordering
+                compareEasiestpath (Path _ p1@((_, (Wormhole _ (Target pid) _)) : _)) (Path _ p2@((_, (Wormhole _ (Target pid') _)) : _)) =
+                  compare (numOfShips p1) (numOfShips p2) <> compare pid' pid  
 
-    shipsOnPlanet :: GameState -> PlanetId -> Ships
-    shipsOnPlanet st pId = ships
-      where
-        Planet _ ships _ = lookupPlanet pId st
+                numOfShips :: [(WormholeId, Wormhole)] -> Int
+                numOfShips = sum . map (\(_, Wormhole _ (Target pId) _) ->
+                  case M.lookup pId ps' of
+                    Just (Planet (Owned Player1) _ _) -> 0
+                    Just (Planet _ (Ships s') _) -> s'
+                    _ -> 0)
+  
+  in concatMap (sendToPath targetId gs) (M.keys (ourPlanets gs))
 
-    sendToPath :: Maybe (Path (WormholeId, Wormhole)) -> [Order]
-    sendToPath mPath
-      | isNothing mPath = []
-      | otherwise = send wId Nothing gs
-      where
-        (Path _ e) = fromMaybe undefined mPath
-        wId = fst (last e)
 
 timidRush :: GameState -> AIState -> ([Order], Log, AIState)
 timidRush gs ai
