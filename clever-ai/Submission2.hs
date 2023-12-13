@@ -390,17 +390,20 @@ planetRankRush gs ai
     planetRankRushMsg = ["Planet Rank Rush Initiated: "] ++ [show targetPlanetId]
 
 nextHighestRankingPlanet :: GameState -> PlanetRanks -> Maybe PlanetId
-nextHighestRankingPlanet gs pRanks = findNextRankingPlanet (M.toList pRanks) initialId minRank
+nextHighestRankingPlanet gs pRanks = findNextRankingPlanet (M.toList pRanks) Nothing minRank
   where
-    initialId = -1
     minRank = 0
-    findNextRankingPlanet :: [(PlanetId, PlanetRank)] -> PlanetId -> PlanetRank -> Maybe PlanetId
-    findNextRankingPlanet [] currentPid _ = if currentPid == initialId then Nothing else Just currentPid
+    findNextRankingPlanet :: [(PlanetId, PlanetRank)] -> Maybe PlanetId -> PlanetRank -> Maybe PlanetId
+    findNextRankingPlanet [] currentPid _ = currentPid
     findNextRankingPlanet ((pId, pRank) : prs) currentPid maxRank
-      | notOurPlanet && pRank > maxRank = findNextRankingPlanet prs pId pRank
+      | notOurPlanet && pRank > maxRank = findNextRankingPlanet prs (Just pId) pRank
+      | notOurPlanet && pRank == maxRank && smallerId pId = findNextRankingPlanet prs (Just pId) maxRank
       | otherwise = findNextRankingPlanet prs currentPid maxRank
       where
         notOurPlanet = not (ourPlanet (lookupPlanet pId gs))
+        smallerId p = case currentPid of
+          Just current -> pId < current
+          Nothing -> True
 
 data PList a = PList (a -> a -> Ordering) [a]
 
